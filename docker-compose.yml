@@ -1,10 +1,34 @@
 services:
-  OpenRouter-Bot:
-    container_name: OpenRouter-Bot
-    image: lifailon/openrouter-bot:latest
-    build:
-      context: .
-      dockerfile: Dockerfile
-    volumes:
-      - .env:/openrouter-bot/.env
+  openrouter-bot:
+    container_name: openrouter-bot
+    image: ghcr.io/alanon202/openrouter-bot:latest
     restart: unless-stopped
+    security_opt:
+      - no-new-privileges:true
+    cap_drop:
+      - ALL
+    user: "1000:1000"
+    environment:
+      API_KEY: ${API_KEY}
+      MODEL: ${MODEL}
+      TELEGRAM_BOT_TOKEN: ${TELEGRAM_BOT_TOKEN}
+      ADMIN_IDS: ${ADMIN_IDS}
+      ALLOWED_USER_IDS: ${ALLOWED_USER_IDS}
+      GUEST_BUDGET: ${GUEST_BUDGET}
+      LANG: ${LANG}
+    volumes:
+      - /data/openrouter-bot/.env:/openrouter-bot/.env:ro
+      - /data/openrouter-bot/logs://openrouter-bot/logs:rw
+    tmpfs:
+      - /tmp
+    networks:
+      - internal
+    deploy:
+      resources:
+        limits:
+          memory: 256M
+          cpus: '1.0'
+
+networks:
+  internal:
+    driver: bridge
