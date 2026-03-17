@@ -1,110 +1,62 @@
-name: CI
+name: Build and Push Docker Image to GHCR
 
 on:
+  push:
+    branches:
+      - main
+    tags:
+      - 'v*'
+  pull_request:
+    branches:
+      - main
   workflow_dispatch:
-    inputs:
-      Docker:
-        description: 'Build and push to Docker Hub'
-        default: false
-        type: boolean
-      Binary:
-        description: 'Build binary'
-        default: true
-        type: boolean
-      Version:
-        description: 'Version for binary and tag for image'
-        required: true
-        default: 'latest'
-        type: string
+
+env:
+  REGISTRY: ghcr.io
+  IMAGE_NAME: ${{ github.repository }}
 
 jobs:
-  build:
-    runs-on: ubuntu-latest 
+  build-and-push:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      packages: write
 
     steps:
-      - name: Clone main repository
+      - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Login to Docker Hub
-        if: ${{ github.event.inputs.Docker == 'true' }}
+      - name: Set up Docker Buildx
+        uses: docker/setup-buildx-action@v3
+
+      - name: Log in to GHCR
+        if: ${{ github.event_name != 'pull_request' }}
         uses: docker/login-action@v3
         with:
-          username: ${{ secrets.DOCKER_USERNAME }}
-          password: ${{ secrets.DOCKER_PASSWORD }}
+          registry: ${{ env.REGISTRY }}
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
 
-      - name: Install Docker Buildx
-        if: ${{ github.event.inputs.Docker == 'true' }}
-        uses: docker/setup-buildx-action@v3
+      - name: Extract metadata (tags, labels)
+        id: meta
+        if: ${{ github.event_name != 'pull_request' }}
+        uses: docker/metadata-action@v5
         with:
-          driver: docker-container
-          install: true
+          images: ${{ env.REGISTRY }}/${{ env.IMAGE_NAME }}
+          tags: |
+            type=ref,event=branch
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=semver,pattern={{major}}
+            type=raw,value=latest,enable=${{ github.ref == format('refs/heads/{0}', 'main') }}
 
-      - name: Build and push Docker images for amd64 and arm64
-        if: ${{ github.event.inputs.Docker == 'true' }}
-        run: |
-          # docker build -t lifailon/openrouter-bot:${{ github.event.inputs.Version }} .
-          # docker push lifailon/openrouter-bot:${{ github.event.inputs.Version }}
-          docker buildx build \
-            --platform \
-            linux/amd64,linux/arm64 \
-            -t lifailon/openrouter-bot:${{ github.event.inputs.Version }} \
-            --push .
-        continue-on-error: true
-
-      - name: Install Go
-        if: ${{ github.event.inputs.Binary == 'true' }}
-        uses: actions/setup-go@v5
+      - name: Build and push Docker image
+        uses: docker/build-push-action@v7
         with:
-          go-version: 1.25
-
-      - name: Build binaries
-        if: ${{ github.event.inputs.Binary == 'true' }}
-        run: |
-          mkdir -p bin
-          architectures=("amd64" "arm64")
-          for arch in "${architectures[@]}"; do
-              CGO_ENABLED=0 GOOS=windows GOARCH=$arch go build -o bin/openrouter-bot-${{ github.event.inputs.Version }}-windows-$arch.exe main.go
-              CGO_ENABLED=0 GOOS=linux GOARCH=$arch go build -o bin/openrouter-bot-${{ github.event.inputs.Version }}-linux-$arch main.go
-              # CGO_ENABLED=0 GOOS=darwin GOARCH=$arch go build -o bin/openrouter-bot-${{ github.event.inputs.Version }}-darwin-$arch main.go
-          done
-          ls -lh bin
-          mkdir -p bin/{openrouter-bot-linux,openrouter-bot-windows,openrouter-bot-raspberry-pi}
-          mv bin/openrouter-bot-${{ github.event.inputs.Version }}-windows-amd64.exe bin/openrouter-bot-windows/openrouter-bot.exe
-          cp ./.env.example bin/openrouter-bot-windows/.env
-          cp ./config.yaml bin/openrouter-bot-windows/config.yaml
-          cp -r ./lang bin/openrouter-bot-windows/lang
-          mkdir bin/openrouter-bot-windows/logs
-          mv bin/openrouter-bot-${{ github.event.inputs.Version }}-linux-amd64 bin/openrouter-bot-linux/openrouter-bot
-          cp ./.env.example bin/openrouter-bot-linux/.env
-          cp ./config.yaml bin/openrouter-bot-linux/config.yaml
-          cp -r ./lang bin/openrouter-bot-linux/lang
-          mkdir bin/openrouter-bot-linux/logs
-          mv bin/openrouter-bot-${{ github.event.inputs.Version }}-linux-arm64 bin/openrouter-bot-raspberry-pi/openrouter-bot
-          cp ./.env.example bin/openrouter-bot-raspberry-pi/.env
-          cp ./config.yaml bin/openrouter-bot-raspberry-pi/config.yaml
-          cp -r ./lang bin/openrouter-bot-raspberry-pi/lang
-          mkdir bin/openrouter-bot-raspberry-pi/logs
-          ls -lha bin/*
-          tar -cvf bin/openrouter-bot-windows.tar -C bin/openrouter-bot-windows/ openrouter-bot.exe .env config.yaml lang logs
-          tar -cvf bin/openrouter-bot-linux.tar -C bin/openrouter-bot-linux/ openrouter-bot .env config.yaml lang logs
-          tar -cvf bin/openrouter-bot-raspberry-pi.tar -C bin/openrouter-bot-raspberry-pi/ openrouter-bot .env config.yaml lang logs
-
-      - name: Upload binaries for Windows
-        if: ${{ github.event.inputs.Binary == 'true' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: openrouter-bot-windows-${{ github.event.inputs.Version }}
-          path: bin/openrouter-bot-windows.tar
-      - name: Upload binaries for Linux
-        if: ${{ github.event.inputs.Binary == 'true' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: openrouter-bot-linux-${{ github.event.inputs.Version }}
-          path: bin/openrouter-bot-linux.tar
-
-      - name: Upload binaries for Raspberry Pi
-        if: ${{ github.event.inputs.Binary == 'true' }}
-        uses: actions/upload-artifact@v4
-        with:
-          name: openrouter-bot-raspberry-pi-${{ github.event.inputs.Version }}
-          path: bin/openrouter-bot-raspberry-pi.tar
+          context: .
+          platforms: linux/amd64,linux/arm64
+          push: ${{ github.event_name != 'pull_request' }}
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          cache-from: type=gha
+          cache-to: type=gha,mode=max
