@@ -58,27 +58,69 @@ func GetFreeModels(conf *config.Config) (string, error) {
 	return result.String(), nil
 }
 
-// safeEdit attempts to edit a message with Markdown, falling back to plain text on error
+// prepareMarkdown ensures that all markdown tags are closed for the current streaming frame
+func prepareMarkdown(md string) string {
+	// 1. Handle Code Blocks
+	if strings.Count(md, "```")%2 != 0 {
+		md += "\n```"
+	}
+
+	// 2. Handle Inline Code
+	if strings.Count(md, "`")%2 != 0 {
+		md += "`"
+	}
+
+	// 3. Handle Bold and Italic
+	// We count the occurrences of * and check if they are balanced.
+	// This is a simplified approach that covers most streaming cases.
+	stars := strings.Count(md, "*")
+	if stars%2 != 0 {
+		md += "*"
+	}
+
+	// 4. Handle Underline (if used)
+	if strings.Count(md, "_")%2 != 0 {
+		md += "_"
+	}
+
+	return md
+}
+
+// safeEdit attempts to edit a message with Markdown, falling back to plain text ONLY if auto-closing fails
 func safeEdit(ctx context.Context, b *bot.Bot, chatID any, msgID int, text string, parseMode models.ParseMode) {
 	if text == "" {
 		return
 	}
-	_, err := b.EditMessageText(ctx, &bot.EditMessageTextParams{
+
+	targetText := text
+	if parseMode == models.ParseModeMarkdown {
+		targetText = prepareMarkdown(text)
+	}
+
+	params := &bot.EditMessageTextParams{
 		ChatID:    chatID,
 		MessageID: msgID,
-		Text:      text,
+		Text:      targetText,
 		ParseMode: parseMode,
-	})
+	}
+
+	_, err := b.EditMessageText(ctx, params)
 	if err != nil {
-		// If markdown fails, try without it
+		// If it's just a "not modified" error, we ignore it completely
+		if strings.Contains(err.Error(), "message is not modified") {
+			return
+		}
+
+		// If Markdown still fails, we try one last time as plain text so the user sees the content
 		if parseMode != "" {
 			_, err = b.EditMessageText(ctx, &bot.EditMessageTextParams{
 				ChatID:    chatID,
 				MessageID: msgID,
-				Text:      text,
+				Text:      text, // Use the raw original text
 			})
 		}
-		if err != nil && !strings.Contains(err.Error(), "message is not modified") {
+
+		if err != nil {
 			log.Printf("Failed to edit message %d: %v", msgID, err)
 		}
 	}
@@ -89,16 +131,13 @@ func HandleChatGPTStreamResponse(b *bot.Bot, client *openai.Client, message *mod
 	user.CheckHistory(conf.MaxHistorySize, conf.MaxHistoryTime)
 	user.SetLastMessageTime(time.Now())
 
-	// If prompt is empty and no photo, return immediately to avoid phantom AI responses
 	if message.Text == "" && len(message.Photo) == 0 {
 		return ""
 	}
 
-	// Send a loading message with animation dots
 	loadMessage := lang.Translate("loadText", conf.Lang)
 	errorMessage := lang.Translate("errorText", conf.Lang)
 
-	// Send initial processing message
 	sentMsg, err := b.SendMessage(ctx, &bot.SendMessageParams{
 		ChatID:          message.Chat.ID,
 		MessageThreadID: threadID,
@@ -110,7 +149,6 @@ func HandleChatGPTStreamResponse(b *bot.Bot, client *openai.Client, message *mod
 	}
 	lastMessageID := sentMsg.ID
 
-	// Goroutine for animation dots
 	animCtx, animCancel := context.WithCancel(ctx)
 	defer animCancel()
 
@@ -130,7 +168,6 @@ func HandleChatGPTStreamResponse(b *bot.Bot, client *openai.Client, message *mod
 		}
 	}()
 
-	// Build messages for OpenAI
 	messages := []openai.ChatCompletionMessage{
 		{
 			Role:    openai.ChatMessageRoleSystem,
@@ -165,13 +202,12 @@ func HandleChatGPTStreamResponse(b *bot.Bot, client *openai.Client, message *mod
 		Stream:           true,
 	}
 
-	// Create stream with timeout
 	streamCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
 	defer cancel()
 
 	stream, err := client.CreateChatCompletionStream(streamCtx, req)
 	if err != nil {
-		animCancel() // Stop animation before error message
+		animCancel()
 		log.Printf("ChatCompletionStream error: %v", err)
 		safeEdit(ctx, b, message.Chat.ID, lastMessageID, errorMessage, "")
 		return ""
@@ -179,13 +215,12 @@ func HandleChatGPTStreamResponse(b *bot.Bot, client *openai.Client, message *mod
 	defer stream.Close()
 	user.SetCurrentStream(stream)
 
-	// Stop animation immediately before processing stream
 	animCancel()
 	var messageText string
 	responseID := ""
 	log.Printf("Stream response started for UserID: %s", user.UserID)
 
-	var lastEditTime time.Time // Zero value ensures immediate first update
+	var lastEditTime time.Time 
 
 	for {
 		response, err := stream.Recv()
@@ -216,7 +251,6 @@ func HandleChatGPTStreamResponse(b *bot.Bot, client *openai.Client, message *mod
 		if len(response.Choices) > 0 {
 			messageText += response.Choices[0].Delta.Content
 
-			// Throttle message editing (e.g., once every 800ms for smoother feel)
 			if messageText != "" && time.Since(lastEditTime) > 800*time.Millisecond {
 				safeEdit(ctx, b, message.Chat.ID, lastMessageID, messageText, models.ParseModeMarkdown)
 				lastEditTime = time.Now()
@@ -227,11 +261,8 @@ func HandleChatGPTStreamResponse(b *bot.Bot, client *openai.Client, message *mod
 
 func addVisionMessage(b *bot.Bot, message *models.Message, config *config.Config) openai.ChatCompletionMessage {
 	if len(message.Photo) > 0 {
-		// Get the largest photo
 		photoSize := message.Photo[len(message.Photo)-1]
 		fileID := photoSize.FileID
-
-		// Get file info
 		file, err := b.GetFile(context.Background(), &bot.GetFileParams{
 			FileID: fileID,
 		})
@@ -242,16 +273,11 @@ func addVisionMessage(b *bot.Bot, message *models.Message, config *config.Config
 				Content: message.Text,
 			}
 		}
-
-		// Construct file URL: https://api.telegram.org/file/bot<token>/<file_path>
 		fileURL := fmt.Sprintf("https://api.telegram.org/file/bot%s/%s", b.Token, file.FilePath)
-		fmt.Println("Photo URL:", fileURL)
-
 		text := message.Text
 		if text == "" {
 			text = config.VisionPrompt
 		}
-
 		return openai.ChatCompletionMessage{
 			Role: openai.ChatMessageRoleUser,
 			MultiContent: []openai.ChatMessagePart{
@@ -269,7 +295,6 @@ func addVisionMessage(b *bot.Bot, message *models.Message, config *config.Config
 			},
 		}
 	}
-
 	return openai.ChatCompletionMessage{
 		Role:    openai.ChatMessageRoleUser,
 		Content: message.Text,
