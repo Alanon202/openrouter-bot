@@ -3,7 +3,7 @@
     <div>
     OpenRouter
     <br>
-    Bot
+    Bot (Refactored)
     </div>
 </h1>
 
@@ -11,31 +11,36 @@
     <strong>English (🇺🇸)</strong> | <a href="README_RU.md">Русский (🇷🇺)</a>
 </h4>
 
-This project allows you to launch your Telegram bot in a few minutes to communicate with free and paid AI models via [OpenRouter](https://openrouter.ai), or local LLMs, for example, via [LM Studio](https://lmstudio.ai).
+This project allows you to launch your Telegram bot in a few minutes to communicate with free and paid AI models via [OpenRouter](https://openrouter.ai).
 
-> [!NOTE]
-> This repository is a fork of the [openrouter-gpt-telegram-bot](https://github.com/deinfinite/openrouter-gpt-telegram-bot) project, which adds new features (such as switch current model and `Markdown` formatting in bot responses) and optimizes the container startup process.
+> [!IMPORTANT]
+> This repository is a significant refactor and improvement of the original bot, migrated to the modern `go-telegram/bot` library. It is designed for high reliability, performance, and advanced Telegram features like Forum Topics.
 
-<details>
-    <summary>Example</summary>
-    <img src="./img/example.png">
-    <img src="./img/commands.png">
-</details>
+### Key Improvements & Advantages
+
+- **Modern Telegram Engine**: Migrated from `telegram-bot-api` to `go-telegram/bot` for better performance and support for the latest Telegram API features.
+- **Forum/Thread Support**: Full support for Telegram Forum Topics (`MessageThreadID`), allowing the bot to work seamlessly in organized group chats.
+- **High Concurrency Safety**: Completely refactored state management with fine-grained locking, preventing race conditions even with many simultaneous users.
+- **Optimized for Docker**:
+  - Reduced resource footprint through singleton manager patterns.
+  - Optional `.env` support.
+  - Improved graceful shutdown and signal handling.
+- **Enhanced Reliability**:
+  - Implementation of `SafeEdit` to prevent message truncation on Markdown errors.
+  - Automatic API timeouts (5m) to prevent hanging goroutines.
+  - Update deduplication to prevent "double-bubble" AI responses.
+- **Smooth UX**:
+  - Throttled streaming updates (800ms) for a fluid visual experience without hitting rate limits.
+  - Faster animation dots (400ms) for better interactivity.
+  - Improved error handling and automatic plain-text fallback.
 
 ## Preparation
 
 - Register with [OpenRouter](https://openrouter.ai) and get an [API key](https://openrouter.ai/settings/keys).
-
 - Create your Telegram bot using [@BotFather](https://telegram.me/BotFather) and get its API token.
-
 - Get your telegram id using [@getmyid_bot](https://t.me/getmyid_bot).
 
-> [!TIP]
-> When you launch the bot, you will be able to see the IDs of other users in the log, to whom you can also grant access to the bot in the future.
-
 ## Installation
-
-To run locally on Windows or Linux system, download the pre-built binary (without dependencies) from the [releases](https://github.com/Lifailon/openrouter-bot/releases) page.
 
 ### Running in Docker
 
@@ -46,7 +51,7 @@ mkdir openrouter-bot
 cd openrouter-bot
 ```
 
-- Create `.env` file and fill in the basic parameters:
+- Create `.env` file (or provide environment variables directly):
 
 ```bash
 # OpenRouter api key
@@ -65,23 +70,14 @@ GUEST_BUDGET=0
 LANG=EN
 ```
 
-The list of all available parameters is listed in the [.env.example](https://github.com/Lifailon/openrouter-bot/blob/main/.env.example) file
-
-- Run a container using the image from [Docker Hub](https://hub.docker.com/r/lifailon/openrouter-bot):
+- Run using Docker Compose:
 
 ```bash
-docker run -d --name OpenRouter-Bot \
-    -v ./.env:/openrouter-bot/.env \
-    --restart unless-stopped \
-    lifailon/openrouter-bot:latest
+docker-compose up -d --build
 ```
-
-The image is build for `amd64` and `arm64` (Raspberry Pi) platforms using [docker buildx](https://github.com/docker/buildx).
 
 ## Build
 
 ```bash
-git clone https://github.com/Lifailon/openrouter-bot
-cd openrouter-bot
-docker-compose up -d --build
+go build -o openrouter-bot .
 ```
