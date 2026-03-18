@@ -16,8 +16,8 @@ type UsageTracker struct {
 	CurrentStream   *openai.ChatCompletionStream
 	Usage           *UserUsage
 	History         History
-	UsageMu         sync.Mutex `json:"-"` // Мьютекс для синхронизации доступа к Usage
-	FileMu          sync.Mutex `json:"-"` // Мьютекс для синхронизации доступа к файлу
+	mu              sync.Mutex `json:"-"` // General mutex for in-memory fields
+	FileMu          sync.Mutex `json:"-"` // Mutex for file operations
 }
 
 type Message struct {
@@ -64,4 +64,34 @@ type GenerationData struct {
 	NumMediaCompletion     int     `json:"num_media_completion"`
 	Origin                 string  `json:"origin"`
 	TotalCost              float64 `json:"total_cost"`
+}
+
+func (ut *UsageTracker) GetSystemPrompt() string {
+	ut.mu.Lock()
+	defer ut.mu.Unlock()
+	return ut.SystemPrompt
+}
+
+func (ut *UsageTracker) SetSystemPrompt(prompt string) {
+	ut.mu.Lock()
+	defer ut.mu.Unlock()
+	ut.SystemPrompt = prompt
+}
+
+func (ut *UsageTracker) SetLastMessageTime(t time.Time) {
+	ut.mu.Lock()
+	defer ut.mu.Unlock()
+	ut.LastMessageTime = t
+}
+
+func (ut *UsageTracker) GetCurrentStream() *openai.ChatCompletionStream {
+	ut.mu.Lock()
+	defer ut.mu.Unlock()
+	return ut.CurrentStream
+}
+
+func (ut *UsageTracker) SetCurrentStream(stream *openai.ChatCompletionStream) {
+	ut.mu.Lock()
+	defer ut.mu.Unlock()
+	ut.CurrentStream = stream
 }

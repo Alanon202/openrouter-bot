@@ -95,14 +95,14 @@ func (ut *UsageTracker) CanViewStats(conf *config.Config) bool {
 func (ut *UsageTracker) loadOrCreateUsage() error {
 	userFile := filepath.Join(ut.LogsDir, ut.UserID+".json")
 	if _, err := os.Stat(userFile); os.IsNotExist(err) {
-		ut.UsageMu.Lock()      // Added lock
+		ut.mu.Lock()      // Added lock
 		ut.Usage = &UserUsage{ // Initialize as a pointer
 			UserName: ut.UserName,
 			UsageHistory: UsageHist{
 				ChatCost: make(map[string]float64),
 			},
 		}
-		ut.UsageMu.Unlock() // Added unlock
+		ut.mu.Unlock() // Added unlock
 		err := ut.saveUsage()
 		if err != nil {
 			return err
@@ -113,9 +113,9 @@ func (ut *UsageTracker) loadOrCreateUsage() error {
 			log.Println(err)
 			return err
 		}
-		ut.UsageMu.Lock() // Added lock
+		ut.mu.Lock() // Added lock
 		err = json.Unmarshal(data, ut.Usage)
-		ut.UsageMu.Unlock() // Added unlock
+		ut.mu.Unlock() // Added unlock
 		if err != nil {
 			log.Println(err)
 			return err
@@ -129,9 +129,9 @@ func (ut *UsageTracker) saveUsage() error {
 	ut.FileMu.Lock()
 	defer ut.FileMu.Unlock()
 
-	ut.UsageMu.Lock()
+	ut.mu.Lock()
 	data, err := json.MarshalIndent(ut.Usage, "", "  ")
-	ut.UsageMu.Unlock()
+	ut.mu.Unlock()
 
 	if err != nil {
 		log.Printf("Error marshalling usage data for user %s: %v", ut.UserID, err)
@@ -155,36 +155,36 @@ func (ut *UsageTracker) loadUsage() error {
 	if err != nil {
 		if os.IsNotExist(err) {
 			log.Printf("File not found for user %s, creating new usage data.", ut.UserID)
-			ut.UsageMu.Lock()
+			ut.mu.Lock()
 			ut.Usage = &UserUsage{ // Initialize as pointer
 				UsageHistory: UsageHist{
 					ChatCost: make(map[string]float64),
 				},
 			}
-			ut.UsageMu.Unlock()
+			ut.mu.Unlock()
 			return ut.saveUsage()
 		}
 		log.Printf("Error reading usage data from file for user %s: %v", ut.UserID, err)
 		return fmt.Errorf("error reading usage data from file: %w", err)
 	}
 
-	ut.UsageMu.Lock()
+	ut.mu.Lock()
 	var usage UserUsage
 	err = json.Unmarshal(data, &usage) // Unmarshal into temporary variable
 	if err != nil {
-		ut.UsageMu.Unlock()
+		ut.mu.Unlock()
 		log.Printf("Error unmarshalling usage data for user %s: %v", ut.UserID, err)
 		return fmt.Errorf("error unmarshalling usage data: %w", err)
 	}
 	ut.Usage = &usage // Assign pointer to unmarshaled data
-	ut.UsageMu.Unlock()
+	ut.mu.Unlock()
 
 	return nil
 }
 
 // AddCost Добавляет стоимость к текущему использованию и сохраняет данные
 func (ut *UsageTracker) AddCost(cost float64) {
-	ut.UsageMu.Lock()
+	ut.mu.Lock()
 
 	today := time.Now().Format("2006-01-02")
 	if ut.Usage.UsageHistory.ChatCost == nil { // Добавлена проверка на nil
@@ -192,7 +192,7 @@ func (ut *UsageTracker) AddCost(cost float64) {
 	}
 	ut.Usage.UsageHistory.ChatCost[today] += cost
 
-	ut.UsageMu.Unlock() // Переместил Unlock после вызова saveUsage()
+	ut.mu.Unlock() // Переместил Unlock после вызова saveUsage()
 
 	if err := ut.saveUsage(); err != nil {
 		log.Printf("Failed to save usage after adding cost for user %s: %v", ut.UserID, err)
@@ -201,8 +201,8 @@ func (ut *UsageTracker) AddCost(cost float64) {
 
 // GetCurrentCost returns the current cost based on the specified period.
 func (ut *UsageTracker) GetCurrentCost(period string) float64 {
-	ut.UsageMu.Lock()
-	defer ut.UsageMu.Unlock()
+	ut.mu.Lock()
+	defer ut.mu.Unlock()
 
 	today := time.Now().Format("2006-01-02")
 	var cost float64

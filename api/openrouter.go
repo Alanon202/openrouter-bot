@@ -9,13 +9,13 @@ import (
 	"log"
 	"net/http"
 	"openrouter-bot/config"
-	configs "openrouter-bot/config"
 	"openrouter-bot/lang"
 	"openrouter-bot/user"
 	"strings"
 	"time"
 
-	tgbotapi "github.com/go-telegram-bot-api/telegram-bot-api/v5"
+	"github.com/go-telegram/bot"
+	"github.com/go-telegram/bot/models"
 	"github.com/sashabaranov/go-openai"
 )
 
@@ -31,13 +31,7 @@ type APIResponse struct {
 	Data []Model `json:"data"`
 }
 
-func GetFreeModels() (string, error) {
-	manager, err := config.NewManager("./config.yaml")
-	if err != nil {
-		log.Fatalf("Error initializing config manager: %v", err)
-	}
-	conf := manager.GetConfig()
-
+func GetFreeModels(conf *config.Config) (string, error) {
 	resp, err := http.Get(conf.OpenAIBaseURL + "/models")
 	if err != nil {
 		return "", fmt.Errorf("error get models: %v", err)
@@ -57,49 +51,36 @@ func GetFreeModels() (string, error) {
 
 	var result strings.Builder
 	for _, model := range apiResponse.Data {
-		// Filter by price
 		if model.Pricing.Prompt == "0" {
-			// escapedDesc := strings.ReplaceAll(model.Description, "*", "\\*")
-			// escapedDesc = strings.ReplaceAll(escapedDesc, "_", "\\_")
-			// result.WriteString(fmt.Sprintf("%s - %s\n", model.ID, escapedDesc))
 			result.WriteString(fmt.Sprintf("➡ `%s`\n", model.ID))
-			// result.WriteString(fmt.Sprintf("➡ `/set_model %s`\n", model.ID))
 		}
 	}
 	return result.String(), nil
 }
 
-func HandleChatGPTStreamResponse(bot *tgbotapi.BotAPI, client *openai.Client, message *tgbotapi.Message, config *config.Config, user *user.UsageTracker) string {
+func HandleChatGPTStreamResponse(b *bot.Bot, client *openai.Client, message *models.Message, conf *config.Config, user *user.UsageTracker, threadID int) string {
 	ctx := context.Background()
-	user.CheckHistory(config.MaxHistorySize, config.MaxHistoryTime)
-	user.LastMessageTime = time.Now()
+	user.CheckHistory(conf.MaxHistorySize, conf.MaxHistoryTime)
+	user.SetLastMessageTime(time.Now())
 
-	err := lang.LoadTranslations("./lang/")
-	if err != nil {
-		log.Fatalf("Error loading translations: %v", err)
-	}
-
-	manager, err := configs.NewManager("./config.yaml")
-	if err != nil {
-		log.Fatalf("Error initializing config manager: %v", err)
-	}
-
-	conf := manager.GetConfig()
-
-	// Send a loading message with animation points
+	// Send a loading message with animation dots
 	loadMessage := lang.Translate("loadText", conf.Lang)
 	errorMessage := lang.Translate("errorText", conf.Lang)
 
-	processingMsg := tgbotapi.NewMessage(message.Chat.ID, loadMessage)
-	sentMsg, err := bot.Send(processingMsg)
+	// Send initial processing message
+	sentMsg, err := b.SendMessage(ctx, &bot.SendMessageParams{
+		ChatID:          message.Chat.ID,
+		MessageThreadID: threadID,
+		Text:            loadMessage,
+	})
 	if err != nil {
 		log.Printf("Failed to send processing message: %v", err)
 		return ""
 	}
-	lastMessageID := sentMsg.MessageID
+	lastMessageID := sentMsg.ID
 
-	// Goroutine for animation points
-	stopAnimation := make(chan bool)
+	// Goroutine for animation dots
+	stopAnimation := make(chan bool, 1) // Buffered to avoid blocking
 	go func() {
 		dots := []string{"", ".", "..", "...", "..", "."}
 		i := 0
@@ -109,10 +90,16 @@ func HandleChatGPTStreamResponse(bot *tgbotapi.BotAPI, client *openai.Client, me
 				return
 			default:
 				text := fmt.Sprintf("%s%s", loadMessage, dots[i])
-				editMsg := tgbotapi.NewEditMessageText(message.Chat.ID, lastMessageID, text)
-				_, err := bot.Send(editMsg)
+				_, err := b.EditMessageText(ctx, &bot.EditMessageTextParams{
+					ChatID:    message.Chat.ID,
+					MessageID: lastMessageID,
+					Text:      text,
+				})
 				if err != nil {
-					log.Printf("Failed to update processing message: %v", err)
+					// Ignore "message is not modified" errors
+					if !strings.Contains(err.Error(), "message is not modified") {
+						log.Printf("Failed to update processing message: %v", err)
+					}
 				}
 
 				i = (i + 1) % len(dots)
@@ -121,10 +108,11 @@ func HandleChatGPTStreamResponse(bot *tgbotapi.BotAPI, client *openai.Client, me
 		}
 	}()
 
+	// Build messages for OpenAI
 	messages := []openai.ChatCompletionMessage{
 		{
 			Role:    openai.ChatMessageRoleSystem,
-			Content: user.SystemPrompt,
+			Content: user.GetSystemPrompt(),
 		},
 	}
 
@@ -135,8 +123,8 @@ func HandleChatGPTStreamResponse(bot *tgbotapi.BotAPI, client *openai.Client, me
 		})
 	}
 
-	if config.Vision == "true" {
-		messages = append(messages, addVisionMessage(bot, message, config))
+	if conf.Vision == "true" {
+		messages = append(messages, addVisionMessage(b, message, conf))
 	} else {
 		messages = append(messages, openai.ChatCompletionMessage{
 			Role:    openai.ChatMessageRoleUser,
@@ -145,84 +133,113 @@ func HandleChatGPTStreamResponse(bot *tgbotapi.BotAPI, client *openai.Client, me
 	}
 
 	req := openai.ChatCompletionRequest{
-		Model:            config.Model.ModelName,
-		FrequencyPenalty: float32(config.Model.FrequencyPenalty),
-		PresencePenalty:  float32(config.Model.PresencePenalty),
-		Temperature:      float32(config.Model.Temperature),
-		TopP:             float32(config.Model.TopP),
-		MaxTokens:        config.MaxTokens,
+		Model:            conf.Model.ModelName,
+		FrequencyPenalty: float32(conf.Model.FrequencyPenalty),
+		PresencePenalty:  float32(conf.Model.PresencePenalty),
+		Temperature:      float32(conf.Model.Temperature),
+		TopP:             float32(conf.Model.TopP),
+		MaxTokens:        conf.MaxTokens,
 		Messages:         messages,
 		Stream:           true,
 	}
 
-	// Error handling and sending a response message
-	stream, err := client.CreateChatCompletionStream(ctx, req)
+	// Create stream with timeout
+	streamCtx, cancel := context.WithTimeout(ctx, 5*time.Minute)
+	defer cancel()
+
+	stream, err := client.CreateChatCompletionStream(streamCtx, req)
 	if err != nil {
-		fmt.Printf("ChatCompletionStream error: %v\n", err)
+		log.Printf("ChatCompletionStream error: %v", err)
 		stopAnimation <- true
-		bot.Send(tgbotapi.NewEditMessageText(message.Chat.ID, lastMessageID, errorMessage))
+		_, err = b.EditMessageText(ctx, &bot.EditMessageTextParams{
+			ChatID:    message.Chat.ID,
+			MessageID: lastMessageID,
+			Text:      errorMessage,
+		})
+		if err != nil {
+			log.Printf("Failed to edit message: %v", err)
+		}
 		return ""
 	}
 	defer stream.Close()
-	user.CurrentStream = stream
+	user.SetCurrentStream(stream)
 
 	// Stop the animation when we start receiving a response
 	stopAnimation <- true
 	var messageText string
 	responseID := ""
-	log.Printf("User: " + user.UserName + " Stream response. ")
+	log.Printf("Stream response started for UserID: %s", user.UserID)
+
+	lastEditTime := time.Now()
 
 	for {
 		response, err := stream.Recv()
-		if responseID == "" {
+		if responseID == "" && response.ID != "" {
 			responseID = response.ID
 		}
 		if errors.Is(err, io.EOF) {
-			fmt.Println("\nStream finished, response ID:", responseID)
+			log.Printf("Stream finished, UserID: %s, response ID: %s", user.UserID, responseID)
 			user.AddMessage(openai.ChatMessageRoleUser, message.Text)
 			user.AddMessage(openai.ChatMessageRoleAssistant, messageText)
-			editMsg := tgbotapi.NewEditMessageText(message.Chat.ID, lastMessageID, messageText)
-			editMsg.ParseMode = tgbotapi.ModeMarkdown
-			_, err := bot.Send(editMsg)
+			_, err := b.EditMessageText(ctx, &bot.EditMessageTextParams{
+				ChatID:    message.Chat.ID,
+				MessageID: lastMessageID,
+				Text:      messageText,
+				ParseMode: models.ParseModeMarkdown,
+			})
 			if err != nil {
 				log.Printf("Failed to edit message: %v", err)
 			}
-			user.CurrentStream = nil
+			user.SetCurrentStream(nil)
 			return responseID
 		}
 
 		if err != nil {
-			fmt.Printf("\nStream error: %v\n", err)
-			msg := tgbotapi.NewMessage(message.Chat.ID, err.Error())
-			msg.ParseMode = tgbotapi.ModeMarkdown
-			bot.Send(msg)
-			user.CurrentStream = nil
+			log.Printf("Stream error for UserID: %s: %v", user.UserID, err)
+			_, err = b.SendMessage(ctx, &bot.SendMessageParams{
+				ChatID:          message.Chat.ID,
+				Text:            err.Error(),
+				ParseMode:       models.ParseModeMarkdown,
+				MessageThreadID: threadID,
+			})
+			if err != nil {
+				log.Printf("Failed to send error message: %v", err)
+			}
+			user.SetCurrentStream(nil)
 			return responseID
 		}
 
 		if len(response.Choices) > 0 {
 			messageText += response.Choices[0].Delta.Content
-			editMsg := tgbotapi.NewEditMessageText(message.Chat.ID, lastMessageID, messageText)
-			editMsg.ParseMode = tgbotapi.ModeMarkdown
-			_, err := bot.Send(editMsg)
-			if err != nil {
-				continue
+
+			// Throttle message editing to stay within rate limits (e.g., once every 1 second)
+			if time.Since(lastEditTime) > 1*time.Second {
+				_, err := b.EditMessageText(ctx, &bot.EditMessageTextParams{
+					ChatID:    message.Chat.ID,
+					MessageID: lastMessageID,
+					Text:      messageText,
+					ParseMode: models.ParseModeMarkdown,
+				})
+				if err == nil {
+					lastEditTime = time.Now()
+				}
 			}
 		} else {
-			log.Printf("Received empty response choices")
 			continue
 		}
 	}
 }
 
-func addVisionMessage(bot *tgbotapi.BotAPI, message *tgbotapi.Message, config *config.Config) openai.ChatCompletionMessage {
+func addVisionMessage(b *bot.Bot, message *models.Message, config *config.Config) openai.ChatCompletionMessage {
 	if len(message.Photo) > 0 {
-		// Assuming you want the largest photo size
+		// Get the largest photo
 		photoSize := message.Photo[len(message.Photo)-1]
 		fileID := photoSize.FileID
 
-		// Download the photo
-		file, err := bot.GetFile(tgbotapi.FileConfig{FileID: fileID})
+		// Get file info
+		file, err := b.GetFile(context.Background(), &bot.GetFileParams{
+			FileID: fileID,
+		})
 		if err != nil {
 			log.Printf("Error getting file: %v", err)
 			return openai.ChatCompletionMessage{
@@ -231,11 +248,13 @@ func addVisionMessage(bot *tgbotapi.BotAPI, message *tgbotapi.Message, config *c
 			}
 		}
 
-		// Access the file URL
-		fileURL := file.Link(bot.Token)
+		// Construct file URL: https://api.telegram.org/file/bot<token>/<file_path>
+		fileURL := fmt.Sprintf("https://api.telegram.org/file/bot%s/%s", b.Token, file.FilePath)
 		fmt.Println("Photo URL:", fileURL)
-		if message.Text == "" {
-			message.Text = config.VisionPrompt
+
+		text := message.Text
+		if text == "" {
+			text = config.VisionPrompt
 		}
 
 		return openai.ChatCompletionMessage{
@@ -243,7 +262,7 @@ func addVisionMessage(bot *tgbotapi.BotAPI, message *tgbotapi.Message, config *c
 			MultiContent: []openai.ChatMessagePart{
 				{
 					Type: openai.ChatMessagePartTypeText,
-					Text: message.Text,
+					Text: text,
 				},
 				{
 					Type: openai.ChatMessagePartTypeImageURL,
@@ -254,10 +273,10 @@ func addVisionMessage(bot *tgbotapi.BotAPI, message *tgbotapi.Message, config *c
 				},
 			},
 		}
-	} else {
-		return openai.ChatCompletionMessage{
-			Role:    openai.ChatMessageRoleUser,
-			Content: message.Text,
-		}
+	}
+
+	return openai.ChatCompletionMessage{
+		Role:    openai.ChatMessageRoleUser,
+		Content: message.Text,
 	}
 }

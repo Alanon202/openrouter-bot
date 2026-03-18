@@ -23,11 +23,17 @@ func (ut *UsageTracker) ClearHistory() {
 func (ut *UsageTracker) CheckHistory(maxMessages int, maxTime int) {
 	ut.History.mu.Lock()
 	defer ut.History.mu.Unlock()
-	//Удаляем старые сообщения
-	if ut.LastMessageTime.IsZero() {
+
+	ut.mu.Lock()
+	lastMsgTime := ut.LastMessageTime
+	if lastMsgTime.IsZero() {
 		ut.LastMessageTime = time.Now()
+		lastMsgTime = ut.LastMessageTime
 	}
-	if ut.LastMessageTime.Before(time.Now().Add(-time.Duration(maxTime) * time.Minute)) {
+	ut.mu.Unlock()
+
+	//Удаляем старые сообщения
+	if lastMsgTime.Before(time.Now().Add(-time.Duration(maxTime) * time.Minute)) {
 		// Remove messages older than the maximum time limit
 		ut.History.messages = make([]Message, 0)
 	}

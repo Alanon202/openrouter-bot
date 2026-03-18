@@ -53,10 +53,7 @@ type ModelParameters struct {
 }
 
 func Load() (*Config, error) {
-	err := godotenv.Load()
-	if err != nil {
-		return nil, err
-	}
+	_ = godotenv.Load() // Optional: ignore error if .env is missing
 
 	// Default params
 	viper.SetDefault("MAX_TOKENS", 2000)
@@ -134,11 +131,17 @@ func printConfig(c *Config) {
 		field := v.Field(i)
 		fieldName := t.Field(i).Name
 
+		value := field.Interface()
+		// Redact sensitive fields
+		if fieldName == "TelegramBotToken" || fieldName == "OpenAIApiKey" {
+			value = "[REDACTED]"
+		}
+
 		if field.Kind() == reflect.Struct {
 			fmt.Printf("%s:\n", fieldName)
 			printStructFields(field)
 		} else {
-			fmt.Printf("%s: %v\n", fieldName, field.Interface())
+			fmt.Printf("%s: %v\n", fieldName, value)
 		}
 	}
 }

@@ -4,7 +4,7 @@ go 1.24
 
 require (
 	github.com/fsnotify/fsnotify v1.9.0
-	github.com/go-telegram-bot-api/telegram-bot-api/v5 v5.5.1
+	github.com/go-telegram/bot v1.19.0
 	github.com/joho/godotenv v1.5.1
 	github.com/sashabaranov/go-openai v1.41.1
 	github.com/spf13/viper v1.20.1
