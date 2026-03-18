@@ -12,6 +12,8 @@ import (
 	"os/signal"
 	"strconv"
 	"strings"
+	"sync"
+	"time"
 
 	"github.com/go-telegram/bot"
 	"github.com/go-telegram/bot/models"
@@ -78,10 +80,26 @@ func main() {
 
 	userManager := user.NewUserManager("logs")
 
+	// Deduplicator to prevent double-processing of updates
+	processedUpdates := &sync.Map{}
+	// Cleanup old updates occasionally
+	go func() {
+		for {
+			time.Sleep(10 * time.Minute)
+			processedUpdates.Range(func(key, value any) bool {
+				if t, ok := value.(time.Time); ok && time.Since(t) > 10*time.Minute {
+					processedUpdates.Delete(key)
+				}
+				return true
+			})
+		}
+	}()
+
 	// Store user manager in context for handlers to access
 	ctx = context.WithValue(ctx, userManagerKey, userManager)
 	ctx = context.WithValue(ctx, clientKey, client)
 	ctx = context.WithValue(ctx, configManagerKey, manager)
+	ctx = context.WithValue(ctx, "processedUpdates", processedUpdates)
 
 	log.Println("Starting bot...")
 	b.Start(ctx)
@@ -91,6 +109,13 @@ func main() {
 func createUpdateHandler(manager *config.Manager) bot.HandlerFunc {
 	return func(ctx context.Context, b *bot.Bot, update *models.Update) {
 		if update.Message == nil {
+			return
+		}
+
+		// Deduplicate updates
+		processedUpdates := ctx.Value("processedUpdates").(*sync.Map)
+		if _, loaded := processedUpdates.LoadOrStore(update.ID, time.Now()); loaded {
+			log.Printf("Ignoring duplicate update %d", update.ID)
 			return
 		}
 
