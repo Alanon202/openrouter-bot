@@ -60,6 +60,9 @@ func GetFreeModels(conf *config.Config) (string, error) {
 
 // safeEdit attempts to edit a message with Markdown, falling back to plain text on error
 func safeEdit(ctx context.Context, b *bot.Bot, chatID any, msgID int, text string, parseMode models.ParseMode) {
+	if text == "" {
+		return
+	}
 	_, err := b.EditMessageText(ctx, &bot.EditMessageTextParams{
 		ChatID:    chatID,
 		MessageID: msgID,
@@ -85,6 +88,11 @@ func HandleChatGPTStreamResponse(b *bot.Bot, client *openai.Client, message *mod
 	ctx := context.Background()
 	user.CheckHistory(conf.MaxHistorySize, conf.MaxHistoryTime)
 	user.SetLastMessageTime(time.Now())
+
+	// If prompt is empty and no photo, return immediately to avoid phantom AI responses
+	if message.Text == "" && len(message.Photo) == 0 {
+		return ""
+	}
 
 	// Send a loading message with animation dots
 	loadMessage := lang.Translate("loadText", conf.Lang)
@@ -123,7 +131,6 @@ func HandleChatGPTStreamResponse(b *bot.Bot, client *openai.Client, message *mod
 	}()
 
 	// Build messages for OpenAI
-	// ... (rest of messages logic same)
 	messages := []openai.ChatCompletionMessage{
 		{
 			Role:    openai.ChatMessageRoleSystem,
@@ -210,7 +217,7 @@ func HandleChatGPTStreamResponse(b *bot.Bot, client *openai.Client, message *mod
 			messageText += response.Choices[0].Delta.Content
 
 			// Throttle message editing (e.g., once every 1.5 seconds to be safer)
-			if time.Since(lastEditTime) > 1500*time.Millisecond {
+			if messageText != "" && time.Since(lastEditTime) > 1500*time.Millisecond {
 				safeEdit(ctx, b, message.Chat.ID, lastMessageID, messageText, models.ParseModeMarkdown)
 				lastEditTime = time.Now()
 			}

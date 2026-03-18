@@ -119,6 +119,11 @@ func createUpdateHandler(manager *config.Manager) bot.HandlerFunc {
 			return
 		}
 
+		// IGNORE empty messages that aren't photos (likely service messages or artifacts from thread movement)
+		if update.Message.Text == "" && len(update.Message.Photo) == 0 {
+			return
+		}
+
 		// Extract message thread ID for forum topic support
 		threadID := update.Message.MessageThreadID
 
