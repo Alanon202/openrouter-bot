@@ -58,6 +58,29 @@ func GetFreeModels(conf *config.Config) (string, error) {
 	return result.String(), nil
 }
 
+// safeEdit attempts to edit a message with Markdown, falling back to plain text on error
+func safeEdit(ctx context.Context, b *bot.Bot, chatID any, msgID int, text string, parseMode models.ParseMode) {
+	_, err := b.EditMessageText(ctx, &bot.EditMessageTextParams{
+		ChatID:    chatID,
+		MessageID: msgID,
+		Text:      text,
+		ParseMode: parseMode,
+	})
+	if err != nil {
+		// If markdown fails, try without it
+		if parseMode != "" {
+			_, err = b.EditMessageText(ctx, &bot.EditMessageTextParams{
+				ChatID:    chatID,
+				MessageID: msgID,
+				Text:      text,
+			})
+		}
+		if err != nil && !strings.Contains(err.Error(), "message is not modified") {
+			log.Printf("Failed to edit message %d: %v", msgID, err)
+		}
+	}
+}
+
 func HandleChatGPTStreamResponse(b *bot.Bot, client *openai.Client, message *models.Message, conf *config.Config, user *user.UsageTracker, threadID int) string {
 	ctx := context.Background()
 	user.CheckHistory(conf.MaxHistorySize, conf.MaxHistoryTime)
@@ -80,28 +103,19 @@ func HandleChatGPTStreamResponse(b *bot.Bot, client *openai.Client, message *mod
 	lastMessageID := sentMsg.ID
 
 	// Goroutine for animation dots
-	stopAnimation := make(chan bool, 1) // Buffered to avoid blocking
+	animCtx, animCancel := context.WithCancel(ctx)
+	defer animCancel()
+
 	go func() {
 		dots := []string{"", ".", "..", "...", "..", "."}
 		i := 0
 		for {
 			select {
-			case <-stopAnimation:
+			case <-animCtx.Done():
 				return
 			default:
 				text := fmt.Sprintf("%s%s", loadMessage, dots[i])
-				_, err := b.EditMessageText(ctx, &bot.EditMessageTextParams{
-					ChatID:    message.Chat.ID,
-					MessageID: lastMessageID,
-					Text:      text,
-				})
-				if err != nil {
-					// Ignore "message is not modified" errors
-					if !strings.Contains(err.Error(), "message is not modified") {
-						log.Printf("Failed to update processing message: %v", err)
-					}
-				}
-
+				safeEdit(ctx, b, message.Chat.ID, lastMessageID, text, "")
 				i = (i + 1) % len(dots)
 				time.Sleep(500 * time.Millisecond)
 			}
@@ -109,6 +123,7 @@ func HandleChatGPTStreamResponse(b *bot.Bot, client *openai.Client, message *mod
 	}()
 
 	// Build messages for OpenAI
+	// ... (rest of messages logic same)
 	messages := []openai.ChatCompletionMessage{
 		{
 			Role:    openai.ChatMessageRoleSystem,
@@ -149,23 +164,16 @@ func HandleChatGPTStreamResponse(b *bot.Bot, client *openai.Client, message *mod
 
 	stream, err := client.CreateChatCompletionStream(streamCtx, req)
 	if err != nil {
+		animCancel() // Stop animation before error message
 		log.Printf("ChatCompletionStream error: %v", err)
-		stopAnimation <- true
-		_, err = b.EditMessageText(ctx, &bot.EditMessageTextParams{
-			ChatID:    message.Chat.ID,
-			MessageID: lastMessageID,
-			Text:      errorMessage,
-		})
-		if err != nil {
-			log.Printf("Failed to edit message: %v", err)
-		}
+		safeEdit(ctx, b, message.Chat.ID, lastMessageID, errorMessage, "")
 		return ""
 	}
 	defer stream.Close()
 	user.SetCurrentStream(stream)
 
-	// Stop the animation when we start receiving a response
-	stopAnimation <- true
+	// Stop animation immediately before processing stream
+	animCancel()
 	var messageText string
 	responseID := ""
 	log.Printf("Stream response started for UserID: %s", user.UserID)
@@ -181,30 +189,19 @@ func HandleChatGPTStreamResponse(b *bot.Bot, client *openai.Client, message *mod
 			log.Printf("Stream finished, UserID: %s, response ID: %s", user.UserID, responseID)
 			user.AddMessage(openai.ChatMessageRoleUser, message.Text)
 			user.AddMessage(openai.ChatMessageRoleAssistant, messageText)
-			_, err := b.EditMessageText(ctx, &bot.EditMessageTextParams{
-				ChatID:    message.Chat.ID,
-				MessageID: lastMessageID,
-				Text:      messageText,
-				ParseMode: models.ParseModeMarkdown,
-			})
-			if err != nil {
-				log.Printf("Failed to edit message: %v", err)
-			}
+			safeEdit(ctx, b, message.Chat.ID, lastMessageID, messageText, models.ParseModeMarkdown)
 			user.SetCurrentStream(nil)
 			return responseID
 		}
 
 		if err != nil {
 			log.Printf("Stream error for UserID: %s: %v", user.UserID, err)
-			_, err = b.SendMessage(ctx, &bot.SendMessageParams{
+			_, _ = b.SendMessage(ctx, &bot.SendMessageParams{
 				ChatID:          message.Chat.ID,
 				Text:            err.Error(),
 				ParseMode:       models.ParseModeMarkdown,
 				MessageThreadID: threadID,
 			})
-			if err != nil {
-				log.Printf("Failed to send error message: %v", err)
-			}
 			user.SetCurrentStream(nil)
 			return responseID
 		}
@@ -212,20 +209,11 @@ func HandleChatGPTStreamResponse(b *bot.Bot, client *openai.Client, message *mod
 		if len(response.Choices) > 0 {
 			messageText += response.Choices[0].Delta.Content
 
-			// Throttle message editing to stay within rate limits (e.g., once every 1 second)
-			if time.Since(lastEditTime) > 1*time.Second {
-				_, err := b.EditMessageText(ctx, &bot.EditMessageTextParams{
-					ChatID:    message.Chat.ID,
-					MessageID: lastMessageID,
-					Text:      messageText,
-					ParseMode: models.ParseModeMarkdown,
-				})
-				if err == nil {
-					lastEditTime = time.Now()
-				}
+			// Throttle message editing (e.g., once every 1.5 seconds to be safer)
+			if time.Since(lastEditTime) > 1500*time.Millisecond {
+				safeEdit(ctx, b, message.Chat.ID, lastMessageID, messageText, models.ParseModeMarkdown)
+				lastEditTime = time.Now()
 			}
-		} else {
-			continue
 		}
 	}
 }
