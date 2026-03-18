@@ -58,43 +58,41 @@ func GetFreeModels(conf *config.Config) (string, error) {
 	return result.String(), nil
 }
 
-// prepareMarkdown ensures that all markdown tags are closed for the current streaming frame
-func prepareMarkdown(md string) string {
-	// 1. Handle Code Blocks
-	if strings.Count(md, "```")%2 != 0 {
-		md += "\n```"
+// ensureClosedTags is a naive helper to close open HTML tags for streaming visualization
+func ensureClosedTags(text string) string {
+	// We only care about visual stability during the stream.
+	// If the AI opens a tag, we want to close it for the current frame.
+	
+	// Check for unclosed <pre>
+	if strings.Count(text, "<pre>") > strings.Count(text, "</pre>") {
+		text += "</pre>"
 	}
-
-	// 2. Handle Inline Code
-	if strings.Count(md, "`")%2 != 0 {
-		md += "`"
+	// Check for unclosed <code>
+	if strings.Count(text, "<code>") > strings.Count(text, "</code>") {
+		text += "</code>"
 	}
-
-	// 3. Handle Bold and Italic
-	// We count the occurrences of * and check if they are balanced.
-	// This is a simplified approach that covers most streaming cases.
-	stars := strings.Count(md, "*")
-	if stars%2 != 0 {
-		md += "*"
+	// Check for unclosed <b>
+	if strings.Count(text, "<b>") > strings.Count(text, "</b>") {
+		text += "</b>"
 	}
-
-	// 4. Handle Underline (if used)
-	if strings.Count(md, "_")%2 != 0 {
-		md += "_"
+	// Check for unclosed <i>
+	if strings.Count(text, "<i>") > strings.Count(text, "</i>") {
+		text += "</i>"
 	}
-
-	return md
+	
+	return text
 }
 
-// safeEdit attempts to edit a message with Markdown, falling back to plain text ONLY if auto-closing fails
+// safeEdit attempts to edit a message with HTML, falling back to plain text ONLY if the API rejects it
 func safeEdit(ctx context.Context, b *bot.Bot, chatID any, msgID int, text string, parseMode models.ParseMode) {
 	if text == "" {
 		return
 	}
 
+	// For streaming, we try to close tags so the UI doesn't break
 	targetText := text
-	if parseMode == models.ParseModeMarkdown {
-		targetText = prepareMarkdown(text)
+	if parseMode == models.ParseModeHTML {
+		targetText = ensureClosedTags(text)
 	}
 
 	params := &bot.EditMessageTextParams{
@@ -111,12 +109,12 @@ func safeEdit(ctx context.Context, b *bot.Bot, chatID any, msgID int, text strin
 			return
 		}
 
-		// If Markdown still fails, we try one last time as plain text so the user sees the content
+		// If HTML formatting fails (e.g. invalid nested tags from AI), fallback to plain text
 		if parseMode != "" {
 			_, err = b.EditMessageText(ctx, &bot.EditMessageTextParams{
 				ChatID:    chatID,
 				MessageID: msgID,
-				Text:      text, // Use the raw original text
+				Text:      text, // Use the raw original text (with visible tags, better than nothing)
 			})
 		}
 
@@ -231,7 +229,7 @@ func HandleChatGPTStreamResponse(b *bot.Bot, client *openai.Client, message *mod
 			log.Printf("Stream finished, UserID: %s, response ID: %s", user.UserID, responseID)
 			user.AddMessage(openai.ChatMessageRoleUser, message.Text)
 			user.AddMessage(openai.ChatMessageRoleAssistant, messageText)
-			safeEdit(ctx, b, message.Chat.ID, lastMessageID, messageText, models.ParseModeMarkdown)
+			safeEdit(ctx, b, message.Chat.ID, lastMessageID, messageText, models.ParseModeHTML)
 			user.SetCurrentStream(nil)
 			return responseID
 		}
@@ -241,7 +239,7 @@ func HandleChatGPTStreamResponse(b *bot.Bot, client *openai.Client, message *mod
 			_, _ = b.SendMessage(ctx, &bot.SendMessageParams{
 				ChatID:          message.Chat.ID,
 				Text:            err.Error(),
-				ParseMode:       models.ParseModeMarkdown,
+				ParseMode:       models.ParseModeHTML,
 				MessageThreadID: threadID,
 			})
 			user.SetCurrentStream(nil)
@@ -252,7 +250,7 @@ func HandleChatGPTStreamResponse(b *bot.Bot, client *openai.Client, message *mod
 			messageText += response.Choices[0].Delta.Content
 
 			if messageText != "" && time.Since(lastEditTime) > 800*time.Millisecond {
-				safeEdit(ctx, b, message.Chat.ID, lastMessageID, messageText, models.ParseModeMarkdown)
+				safeEdit(ctx, b, message.Chat.ID, lastMessageID, messageText, models.ParseModeHTML)
 				lastEditTime = time.Now()
 			}
 		}

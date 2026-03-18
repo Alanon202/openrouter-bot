@@ -95,7 +95,7 @@ func Load() (*Config, error) {
 		log.Fatalf("Set budget_period in config file")
 	}
 	language := lang.Translate("language", config.Lang)
-	config.SystemPrompt = "Always answer in " + language + " language." + config.SystemPrompt
+	config.SystemPrompt = "Always answer in " + language + " language. You must format your response using Telegram-compatible HTML tags (<b>, <i>, <code>, <pre>, <a href>). Do not use Markdown." + config.SystemPrompt
 	printConfig(config)
 	return config, nil
 }
