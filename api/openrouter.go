@@ -125,7 +125,7 @@ func HandleChatGPTStreamResponse(b *bot.Bot, client *openai.Client, message *mod
 				text := fmt.Sprintf("%s%s", loadMessage, dots[i])
 				safeEdit(ctx, b, message.Chat.ID, lastMessageID, text, "")
 				i = (i + 1) % len(dots)
-				time.Sleep(500 * time.Millisecond)
+				time.Sleep(400 * time.Millisecond)
 			}
 		}
 	}()
@@ -185,7 +185,7 @@ func HandleChatGPTStreamResponse(b *bot.Bot, client *openai.Client, message *mod
 	responseID := ""
 	log.Printf("Stream response started for UserID: %s", user.UserID)
 
-	lastEditTime := time.Now()
+	var lastEditTime time.Time // Zero value ensures immediate first update
 
 	for {
 		response, err := stream.Recv()
@@ -216,8 +216,8 @@ func HandleChatGPTStreamResponse(b *bot.Bot, client *openai.Client, message *mod
 		if len(response.Choices) > 0 {
 			messageText += response.Choices[0].Delta.Content
 
-			// Throttle message editing (e.g., once every 1.5 seconds to be safer)
-			if messageText != "" && time.Since(lastEditTime) > 1500*time.Millisecond {
+			// Throttle message editing (e.g., once every 800ms for smoother feel)
+			if messageText != "" && time.Since(lastEditTime) > 800*time.Millisecond {
 				safeEdit(ctx, b, message.Chat.ID, lastMessageID, messageText, models.ParseModeMarkdown)
 				lastEditTime = time.Now()
 			}
